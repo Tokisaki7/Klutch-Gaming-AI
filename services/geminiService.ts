@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 // Initialize with environment variable
@@ -13,35 +14,22 @@ export const streamStrategyChat = async (
   newMessage: string,
   useThinking: boolean,
   useSearch: boolean,
+  systemInstruction: string, // Dynamic Personality
   onChunk: (text: string, grounding?: any[]) => void
 ) => {
   const ai = getAiClient();
   
-  // CRITICAL: Logic for Model Selection based on Task
-  // 1. If Search is requested -> MUST use gemini-3-flash-preview (best for search)
-  // 2. If Thinking is requested -> Use gemini-3-pro-preview (best for logic)
-  // Priority: Search > Thinking (if both selected, usually Search implies needing facts, but we can try to combine or prioritize search for the "Assistant" feel)
-  
   let modelName = 'gemini-3-flash-preview';
   
   const config: any = {
-    systemInstruction: `
-      CRITICAL PRIME DIRECTIVE: LANGUAGE MIRRORING & LIVE DATA
-      You are Klutch Vision PRO, an Omni-Lingual Gaming Superintelligence connected to the Neural Net (Google Search).
-      
-      1. DETECT the language of the user's latest message IMMEDIATELY.
-      2. RESPOND in the EXACT SAME language.
-      3. WHEN SEARCHING: Summarize the latest data found from the web. Be specific (dates, patch numbers, stats).
-      
-      IDENTITY: Klutch Vision PRO.
-      KNOWLEDGE: You know every game, every meta, every hidden mechanic.
-      TONE: Elite, Tactical, "Cyberpunk", Precise.
-      FORMAT: Use Markdown. **Bold** for critical stats. Lists for actionable steps.
+    systemInstruction: systemInstruction || `
+      You are Klutch Vision PRO, an Omni-Lingual Gaming Superintelligence.
+      Identity: Elite, Tactical, "Cyberpunk", Precise.
     `,
   };
 
   if (useSearch) {
-    modelName = 'gemini-3-flash-preview'; // Enforce Flash for Search Grounding
+    modelName = 'gemini-3-flash-preview';
     config.tools = [{ googleSearch: {} }];
   } else if (useThinking) {
     modelName = 'gemini-3-pro-preview';
@@ -59,13 +47,52 @@ export const streamStrategyChat = async (
     
     for await (const chunk of resultStream) {
       const text = chunk.text || "";
-      // Extract Google Search Grounding Metadata
       const grounding = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
       onChunk(text, grounding);
     }
   } catch (error) {
     console.error("Chat error:", error);
     throw error;
+  }
+};
+
+/**
+ * Detect Active Game from Screenshot (For Overlay)
+ */
+export const detectActiveGame = async (base64Image: string): Promise<string> => {
+  const ai = getAiClient();
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-lite', // Fast model
+      contents: {
+        parts: [
+          { inlineData: { mimeType: 'image/jpeg', data: base64Image } },
+          { text: "Identify the video game in this image. Return ONLY the name of the game. If no game is visible, return 'Unknown'." }
+        ]
+      }
+    });
+    return response.text?.trim() || "Unknown";
+  } catch (e) {
+    return "Unknown";
+  }
+};
+
+/**
+ * Get Tactical Intel for a specific game
+ */
+export const getTacticalIntel = async (gameName: string): Promise<string[]> => {
+  const ai = getAiClient();
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `You are a tactical assistant. The user is playing "${gameName}". 
+      Provide 3 concise, high-level tactical tips or current meta advice for this game.
+      Format: just 3 bullet points. No intro.`,
+    });
+    const text = response.text || "";
+    return text.split('\n').map(line => line.replace(/^[\*-]\s*/, '').trim()).filter(t => t.length > 0).slice(0, 3);
+  } catch (e) {
+    return ["Analyze situation.", "Check corners.", "Play objective."];
   }
 };
 
@@ -78,7 +105,6 @@ export const analyzeGameScreenshot = async (
   onChunk: (text: string) => void
 ) => {
   const ai = getAiClient();
-  // Use Pro model for best vision reasoning
   const model = 'gemini-3-pro-preview';
 
   try {
@@ -88,15 +114,15 @@ export const analyzeGameScreenshot = async (
         parts: [
           {
             inlineData: {
-              mimeType: 'image/png', // Assuming PNG/JPEG from canvas
+              mimeType: 'image/png',
               data: base64Image
             }
           },
-          { text: prompt ? `User Prompt: "${prompt}".\nIMPORTANT: Respond in the language of this prompt.` : "Analyze this game frame. Identify HUD elements, enemies, health bars, and loot. Give tactical advice. IMPORTANT: Detect the language of the game UI or user context and respond in that language (e.g. Portuguese UI -> Portuguese response)." }
+          { text: prompt ? `User Prompt: "${prompt}".` : "Analyze this game frame. Identify HUD elements, enemies, health bars, and loot. Give tactical advice." }
         ]
       },
       config: {
-        thinkingConfig: { thinkingBudget: 1024 }, // Light thinking for vision
+        thinkingConfig: { thinkingBudget: 1024 },
       }
     });
 
@@ -112,7 +138,7 @@ export const analyzeGameScreenshot = async (
 };
 
 /**
- * Dedicated TheoryCraft engine for heavy math/logic
+ * Theory Craft Engine
  */
 export const runTheoryCraft = async (
   scenario: string,
@@ -125,16 +151,8 @@ export const runTheoryCraft = async (
   try {
     const responseStream = await ai.models.generateContentStream({
       model: model,
-      contents: `
-      SCENARIO: ${scenario}
-      DATA: ${data}
-      
-      TASK: Perform a deep theorycraft analysis. Calculate optimal outcomes, DPS, or strategy.
-      
-      LANGUAGE RULE: Detect the language of the 'SCENARIO' input and respond in that language.
-      `,
+      contents: `SCENARIO: ${scenario}\nDATA: ${data}\nTASK: Perform a deep theorycraft analysis.`,
       config: {
-        // MAXIMUM THINKING POWER for "Insane" calculations
         thinkingConfig: { thinkingBudget: 32768 },
       }
     });
@@ -153,7 +171,7 @@ export const runTheoryCraft = async (
 
 
 /**
- * High Quality Image Generation for Assets and Avatars
+ * Asset Generation
  */
 export const generateGameAsset = async (
   prompt: string,
@@ -188,8 +206,7 @@ export const generateGameAsset = async (
 };
 
 /**
- * Game Recommendation Service using LIVE SEARCH Data
- * Updated to use gemini-3-flash-preview with googleSearch for real-time recommendations
+ * Game Recommendation
  */
 export const getGameRecommendations = async (
   userHistory: string,
@@ -197,17 +214,9 @@ export const getGameRecommendations = async (
 ): Promise<any> => {
   const ai = getAiClient();
   try {
-    // We utilize search to get REAL UP TO DATE games (e.g., "released last week")
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Research current and classic games to suggest 5 recommendations.
-      User History: "${userHistory}"
-      User Preferences: "${preferences}"
-      
-      Step 1: Use Google Search to find games that match these criteria, specifically looking for recent releases or trending titles if implied.
-      Step 2: Return the result STRICTLY as a JSON Array.
-      
-      IMPORTANT: The "reason" field must be in the language of the Preferences input.`,
+      contents: `Research current games.\nUser History: "${userHistory}"\nPreferences: "${preferences}"\nReturn JSON Array.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -221,8 +230,8 @@ export const getGameRecommendations = async (
                 properties: {
                   title: { type: Type.STRING },
                   genre: { type: Type.STRING },
-                  matchScore: { type: Type.INTEGER, description: "Match percentage 0-100" },
-                  reason: { type: Type.STRING, description: "Explanation in the user's language" }
+                  matchScore: { type: Type.INTEGER },
+                  reason: { type: Type.STRING }
                 }
               }
             }
@@ -241,7 +250,7 @@ export const getGameRecommendations = async (
 }
 
 /**
- * Live API Connection Helper
+ * Live API Helper
  */
 export const getLiveClient = () => {
   const ai = getAiClient();
